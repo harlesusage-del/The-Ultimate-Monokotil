@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Monopoli: Penyebab Solophobia</title>
+<link rel="stylesheet" href="style.css">
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Monopoli">
+</head>
+<body>
+
+<!-- SPLASH SCREEN -->
+<div id="splash">
+  <div class="splash-content">
+    <div class="splash-logo">🏛️</div>
+    <h1 class="splash-title">MONOPOLI</h1>
+    <p class="splash-sub">PENYEBAB SOLOPHOBIA</p>
+    <p class="splash-edition">NUSANTARA POLITICAL EDITION</p>
+    <button class="btn-primary" onclick="showModeSelect()">MULAI PERMAINAN</button>
+  </div>
+</div>
+
+<!-- MODE SELECT -->
+<div id="modeSelect" class="hidden">
+  <div class="modal-box">
+    <h2>PILIH MODE</h2>
+    <div class="mode-cards">
+      <div class="mode-card" onclick="showPlayerSelect('classic')">
+        <div class="mode-icon">♾️</div>
+        <h3>CLASSIC</h3>
+        <p>Bermain hingga semua bangkrut. Hanya 1 yang menang.</p>
+      </div>
+      <div class="mode-card" onclick="showPlayerSelect('quick')">
+        <div class="mode-icon">⚡</div>
+        <h3>30 RONDE CEPAT</h3>
+        <p>30 ronde, lalu hitung Net Worth tertinggi.</p>
+      </div>
+    </div>
+    <button class="btn-secondary" onclick="showSplash()">← KEMBALI</button>
+  </div>
+</div>
+
+<!-- PLAYER SELECT -->
+<div id="playerSelect" class="hidden">
+  <div class="modal-box player-select-box">
+    <h2>PILIH PEMAIN</h2>
+    <div class="player-count-row">
+      <span class="player-count-label">Jumlah Pemain:</span>
+      <div class="player-count-btns">
+        <button class="count-btn active" id="cnt2" onclick="setPlayerCount(2)">2</button>
+        <button class="count-btn" id="cnt3" onclick="setPlayerCount(3)">3</button>
+        <button class="count-btn" id="cnt4" onclick="setPlayerCount(4)">4</button>
+      </div>
+    </div>
+    <div id="playerSetupList"></div>
+    <button class="btn-primary" onclick="confirmPlayerSetup()">▶ MULAI GAME</button>
+    <button class="btn-secondary" onclick="showModeSelect()">← KEMBALI</button>
+  </div>
+</div>
+
+<!-- GAME SCREEN -->
+<div id="gameScreen" class="hidden">
+  <!-- TOP BAR -->
+  <div id="topBar">
+    <div id="roundInfo">
+      <span id="modeLabel">CLASSIC</span>
+      <span id="roundCounter"></span>
+    </div>
+    <div id="playerStrip"></div>
+    <button class="btn-sm" onclick="showMenu()">☰ MENU</button>
+  </div>
+
+  <!-- MAIN GAME AREA: board left, panel right -->
+  <div id="gameMain">
+
+    <!-- BOARD WRAPPER -->
+    <div id="boardWrapper">
+      <div id="boardScaler">
+        <div id="board"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL -->
+    <div id="rightPanel">
+
+      <!-- CURRENT PLAYER INFO -->
+      <div id="currentPlayerBar">
+        <div id="cpInfo"></div>
+        <div id="cpActions"></div>
+      </div>
+
+      <!-- DICE + ACTION PANEL -->
+      <div id="actionPanel">
+        <div id="diceArea">
+          <div id="diceDisplay">
+            <div class="die" id="die1">🎲</div>
+            <div class="die" id="die2">🎲</div>
+          </div>
+          <div id="diceTotal"></div>
+        </div>
+        <div id="actionButtons"></div>
+      </div>
+
+      <!-- LOG -->
+      <div id="gameLog">
+        <div id="logTitle">📋 LOG</div>
+        <div id="logContent"></div>
+      </div>
+
+    </div><!-- end rightPanel -->
+
+  </div><!-- end gameMain -->
+</div>
+
+<!-- TILE POPUP -->
+<div id="tilePopup" class="hidden overlay">
+  <div class="popup-box">
+    <div id="popupContent"></div>
+    <div id="popupActions"></div>
+    <button class="btn-secondary" onclick="closeTilePopup()">TUTUP</button>
+  </div>
+</div>
+
+<!-- CARD POPUP -->
+<div id="cardPopup" class="hidden overlay">
+  <div class="popup-box card-popup">
+    <div id="cardContent"></div>
+    <button class="btn-primary" onclick="closeCardPopup()">OK</button>
+  </div>
+</div>
+
+<!-- PROPERTY LIST -->
+<div id="propertyPopup" class="hidden overlay">
+  <div class="popup-box large-popup">
+    <h3>🏘️ PROPERTI PEMAIN</h3>
+    <div id="propertyList"></div>
+    <button class="btn-secondary" onclick="closePropertyPopup()">TUTUP</button>
+  </div>
+</div>
+
+<!-- TRADE POPUP -->
+<div id="tradePopup" class="hidden overlay">
+  <div class="popup-box large-popup">
+    <h3>🔄 PERDAGANGAN</h3>
+    <div id="tradeContent"></div>
+    <div id="tradeActions"></div>
+    <button class="btn-secondary" onclick="closeTradePopup()">BATAL</button>
+  </div>
+</div>
+
+<!-- MORTGAGE POPUP -->
+<div id="mortgagePopup" class="hidden overlay">
+  <div class="popup-box large-popup">
+    <h3>🏦 HIPOTEK &amp; TEBUS</h3>
+    <div id="mortgageList"></div>
+    <button class="btn-secondary" onclick="closeMortgagePopup()">TUTUP</button>
+  </div>
+</div>
+
+<!-- LOAN POPUP -->
+<div id="loanPopup" class="hidden overlay">
+  <div class="popup-box">
+    <h3>💳 PINJAMAN BANK</h3>
+    <div id="loanInfo"></div>
+    <div id="loanActions"></div>
+    <button class="btn-secondary" onclick="closeLoanPopup()">TUTUP</button>
+  </div>
+</div>
+
+<!-- MENU POPUP -->
+<div id="menuPopup" class="hidden overlay">
+  <div class="popup-box">
+    <h3>☰ MENU</h3>
+    <button class="btn-primary" onclick="showNetWorth()">📊 Net Worth</button>
+    <button class="btn-primary" onclick="showPropertyPopupForAll()">🏘️ Semua Properti</button>
+    <button class="btn-primary" onclick="showLoanPopup()">💳 Pinjaman</button>
+    <button class="btn-primary" onclick="showMortgagePopup()">🏦 Hipotek</button>
+    <button class="btn-primary" onclick="showTradePopup()">🔄 Perdagangan</button>
+    <hr>
+    <button class="btn-danger" onclick="confirmNewGame()">🔄 Game Baru</button>
+    <button class="btn-secondary" onclick="closeMenu()">TUTUP</button>
+  </div>
+</div>
+
+<!-- NET WORTH POPUP -->
+<div id="networthPopup" class="hidden overlay">
+  <div class="popup-box">
+    <h3>📊 NET WORTH</h3>
+    <div id="networthContent"></div>
+    <button class="btn-secondary" onclick="closeNetworth()">TUTUP</button>
+  </div>
+</div>
+
+<!-- WIN SCREEN -->
+<div id="winScreen" class="hidden overlay">
+  <div class="popup-box win-box">
+    <div class="win-emoji">🏆</div>
+    <h2>PEMENANG!</h2>
+    <div id="winContent"></div>
+    <button class="btn-primary" onclick="location.reload()">MAIN LAGI</button>
+  </div>
+</div>
+
+<!-- BUILD POPUP -->
+<div id="buildPopup" class="hidden overlay">
+  <div class="popup-box large-popup">
+    <h3>🏗️ BANGUN PROPERTI</h3>
+    <div id="buildList"></div>
+    <button class="btn-secondary" onclick="closeBuildPopup()">TUTUP</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js")
+      .then(function () {
+        console.log("PWA Ready");
+      })
+      .catch(function (error) {
+        console.log("PWA Failed", error);
+      });
+  });
+}
+</script>
+
+</body>
+</html>
