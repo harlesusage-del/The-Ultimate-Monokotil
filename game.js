@@ -104,7 +104,7 @@ const CHANCE_CARDS = [
   { type:'positive', title:'Dividen Saham',       desc:'Saham lo naik kenceng!',             action:'money', amount:80000 },
   { type:'positive', title:'Keluar Penjara',      desc:'Kartu bebas dari penjara.',          action:'jail-free' },
   { type:'positive', title:'Keluar Penjara',      desc:'Kartu bebas dari penjara.',          action:'jail-free' },
-  { type:'neutral',  title:'Maju ke START',       desc:'Langsung ke START, ambil 200rb.',    action:'goto', target:0 },
+  { type:'neutral',  title:'Maju ke START',       desc:'Langsung ke START, ambil 50rb.',    action:'goto', target:0 },
   { type:'neutral',  title:'Maju ke Stasiun',     desc:'Maju ke stasiun terdekat.',          action:'nearest-station' },
   { type:'neutral',  title:'Maju ke Thamrin',     desc:'Maju ke Thamrin.',                   action:'goto', target:37 },
   { type:'neutral',  title:'Mundur 3 Langkah',    desc:'Mundur 3 petak dari posisi ini.',    action:'move', steps:-3 },
@@ -119,7 +119,7 @@ const COMMUNITY_CARDS = [
   { type:'positive', title:'Hadiah Ulang Tahun',  desc:'Semua pemain kasih 20rb.',           action:'collect-from-all', amount:20000 },
   { type:'positive', title:'Menang Kontes',       desc:'Anda menang lomba!',                 action:'money', amount:90000 },
   { type:'positive', title:'Keluar Penjara',      desc:'Kartu bebas dari penjara.',          action:'jail-free' },
-  { type:'neutral',  title:'Maju ke START',       desc:'Langsung ke START, ambil 200rb.',    action:'goto', target:0 },
+  { type:'neutral',  title:'Maju ke START',       desc:'Langsung ke START, ambil 50rb.',    action:'goto', target:0 },
   { type:'neutral',  title:'Maju ke BIP Jakarta', desc:'Maju ke BIP Jakarta.',               action:'goto', target:39 },
   { type:'negative', title:'Biaya Dokter',        desc:'Bayar biaya kesehatan.',             action:'pay', amount:80000 },
   { type:'negative', title:'Biaya Sekolah Anak',  desc:'Bayar biaya pendidikan.',            action:'pay', amount:60000 },
@@ -137,6 +137,21 @@ function initGame(mode) {
   const saved = loadGame(mode);
   if (saved) {
     G = saved;
+    // Backward compat: ensure new fields exist
+    if (!G.playerLoans) G.playerLoans = [];
+    if (!G.playerLoanNextId) G.playerLoanNextId = 1;
+    G.players.forEach(p => {
+      if (p.jailRound === undefined) p.jailRound = 0;
+    });
+    // Convert old mortgaged -> forceSold = false (mortgaged props return to market)
+    G.properties.forEach(prop => {
+      if (prop.mortgaged) {
+        prop.owner = null;
+        prop.level = 0;
+        prop.mortgaged = false;
+      }
+      if (prop.forceSold === undefined) prop.forceSold = false;
+    });
     // Restore PLAYERS_INIT from saved players
     PLAYERS_INIT = G.players.map(p => ({ id: p.id, name: p.name, token: p.token, color: p.color }));
     return;
@@ -158,6 +173,7 @@ function initGame(mode) {
       properties: [],
       inJail: false,
       jailTurns: 0,
+      jailRound: 0,
       jailFreeCards: 0,
       loan: 0,
       loanRound: 0,
@@ -167,13 +183,15 @@ function initGame(mode) {
       idx: t.idx,
       owner: null,
       level: 0,     // 0=no build, 1-3=houses, 4=hotel
-      mortgaged: false,
+      forceSold: false, // jual paksa: properti kembali ke pasar, bisa dibeli pemain lain
     })),
     chanceCards: shuffle([...Array(CHANCE_CARDS.length).keys()]),
     communityCards: shuffle([...Array(COMMUNITY_CARDS.length).keys()]),
     log: [],
     bankFunds: 50000000,
     loanIntervalRounds: 5,
+    playerLoans: [], // { id, lender, borrower, amount, interest, roundBorrowed }
+    playerLoanNextId: 1,
   };
 }
 
@@ -283,7 +301,7 @@ function buildBoard() {
       cell.classList.add('tax');
       html = `<div class="cell-icon">💸</div><div class="cell-name">${tile.name}</div>`;
     } else if (tile.type === 'start') {
-      html = `<div class="cell-icon">🏁</div><div class="cell-name">START</div><div class="cell-price">Ambil 200rb</div>`;
+      html = `<div class="cell-icon">🏁</div><div class="cell-name">START</div><div class="cell-price">Ambil 50rb</div>`;
     } else if (tile.type === 'jail-visit') {
       html = `<div class="cell-icon">👀</div><div class="cell-name">Kunjungan / Penjara</div>`;
     } else if (tile.type === 'parking') {
@@ -421,7 +439,7 @@ function renderOwnership() {
 
     const bldEl = document.getElementById(`bld-${prop.idx}`);
     if (bldEl && tile.type === 'property') {
-      if (prop.mortgaged) { bldEl.textContent = '❌'; }
+      if (prop.forceSold) { bldEl.textContent = '🔴'; }
       else if (prop.level === 4) { bldEl.textContent = '🏢'; }
       else if (prop.level > 0) { bldEl.textContent = '🏠'.repeat(prop.level); }
       else { bldEl.textContent = ''; }
@@ -453,7 +471,8 @@ function renderPlayerStrip() {
 
 function renderCurrentPlayerBar() {
   const p = G.players[G.currentPlayer];
-  const inJailText = p.inJail ? `<span style="color:#E74C3C"> 🔒 Di Penjara (giliran ${p.jailTurns}/3)</span>` : '';
+  const roundsInJail = p.inJail ? (G.round - (p.jailRound || G.round)) : 0;
+  const inJailText = p.inJail ? `<span style="color:#E74C3C"> 🔒 Di Penjara (${roundsInJail}/10 ronde)</span>` : '';
   const loanText = p.loan > 0 ? `<span style="color:#E67E22"> | Hutang: ${fmt(p.loan)}</span>` : '';
 
   document.getElementById('cpInfo').innerHTML = `
@@ -465,7 +484,7 @@ function renderCurrentPlayerBar() {
   document.getElementById('cpActions').innerHTML = `
     <button class="btn-xs gold" onclick="showPropertyPopup(${p.id})">🏘️</button>
     <button class="btn-xs blue" onclick="showBuildPopup()">🏗️</button>
-    <button class="btn-xs" onclick="showMortgagePopup()" style="background:#795548">🏦</button>
+    <button class="btn-xs" onclick="showForceSellPopup()" style="background:#E74C3C">💥 Jual Paksa</button>
   `;
 }
 
@@ -498,9 +517,16 @@ function renderActionPanel() {
       }
       const payJailBtn = document.createElement('button');
       payJailBtn.className = 'action-end';
-      payJailBtn.textContent = '💰 Bayar 100rb';
+      payJailBtn.textContent = '💰 Bayar 500rb';
       payJailBtn.onclick = payJailFine;
       btns.appendChild(payJailBtn);
+
+      const confessBtn = document.createElement('button');
+      confessBtn.className = 'action-end';
+      confessBtn.style.background = '#7B5C3B';
+      confessBtn.textContent = '🕌 Akui Doa di Tembok Ratapan';
+      confessBtn.onclick = confessJail;
+      btns.appendChild(confessBtn);
     }
   } else if (G.phase === 'action') {
     const endBtn = document.createElement('button');
@@ -590,10 +616,12 @@ function doRoll() {
 }
 
 function handleJailRoll(p, d1, d2, isDouble) {
+  const roundsInJail = G.round - (p.jailRound || G.round);
   if (isDouble) {
     addLog(`🎉 ${p.name} keluar penjara dengan double!`);
     p.inJail = false;
     p.jailTurns = 0;
+    p.jailRound = 0;
     const total = d1 + d2;
     movePlayer(p, total, () => {
       G.phase = 'action';
@@ -603,12 +631,17 @@ function handleJailRoll(p, d1, d2, isDouble) {
     });
   } else {
     p.jailTurns++;
-    addLog(`🔒 ${p.name} tidak double. Di penjara giliran ${p.jailTurns}/3.`);
-    if (p.jailTurns >= 3) {
-      addLog(`💸 ${p.name} terpaksa bayar denda 100rb untuk keluar penjara.`);
-      pay(p, 100000, 'bank');
+    addLog(`🔒 ${p.name} tidak double. Di penjara giliran ${p.jailTurns} (ronde ${roundsInJail}/10).`);
+    if (roundsInJail >= 10) {
+      // Paksa keluar: bayar 500rb atau saldo habis
+      addLog(`⏰ ${p.name} sudah 10 ronde di penjara! Terpaksa bayar 500.000 atau semua saldo ke bank.`);
+      const fine = Math.min(500000, p.money);
+      p.money -= fine;
+      G.bankFunds += fine;
       p.inJail = false;
       p.jailTurns = 0;
+      p.jailRound = 0;
+      addLog(`💸 ${p.name} bayar ${fmt(fine)} ke bank untuk bebas.`);
       const total = d1 + d2;
       movePlayer(p, total, () => {
         G.phase = 'action';
@@ -628,21 +661,40 @@ function useJailFreeCard() {
   p.jailFreeCards--;
   p.inJail = false;
   p.jailTurns = 0;
+  p.jailRound = 0;
   addLog(`🃏 ${p.name} pakai Kartu Keluar Penjara Gratis!`);
   renderAll();
 }
 
 function payJailFine() {
   const p = G.players[G.currentPlayer];
-  if (p.money < 100000) {
-    addLog(`❌ ${p.name} tidak punya cukup uang untuk bayar denda!`);
+  const fine = 500000;
+  if (p.money < fine) {
+    addLog(`❌ ${p.name} tidak cukup uang untuk bayar denda 500.000!`);
     return;
   }
-  pay(p, 100000, 'bank');
+  p.money -= fine;
+  G.bankFunds += fine;
   p.inJail = false;
   p.jailTurns = 0;
-  addLog(`💸 ${p.name} bayar 100rb untuk keluar penjara.`);
+  p.jailRound = 0;
+  addLog(`💸 ${p.name} bayar 500.000 ke bank untuk keluar penjara.`);
   renderAll();
+}
+
+function confessJail() {
+  const p = G.players[G.currentPlayer];
+  // Player mengakui pernah berdoa di tembok ratapan solo
+  // Bank mengambil 50% uang pemain
+  const taken = Math.floor(p.money * 0.5);
+  p.money -= taken;
+  G.bankFunds += taken;
+  p.inJail = false;
+  p.jailTurns = 0;
+  p.jailRound = 0;
+  addLog(`🕌 ${p.name} mengaku pernah berdoa di Tembok Ratapan Solo! Bank ambil 50% uang: ${fmt(taken)}`);
+  renderAll();
+  saveGame();
 }
 
 function movePlayer(p, steps, callback) {
@@ -651,8 +703,8 @@ function movePlayer(p, steps, callback) {
 
   // Check if passed or landed on START (only when moving forward)
   if (steps > 0 && (fromPos + steps) >= 40) {
-    addLog(`🏁 ${p.name} lewat START! +200.000`);
-    p.money += 200000;
+    addLog(`🏁 ${p.name} lewat START! +50.000`);
+    p.money += 50000;
   }
 
   p.position = toPos;
@@ -663,8 +715,9 @@ function sendToJail(p) {
   p.position = 10; // jail-visit tile is jail
   p.inJail = true;
   p.jailTurns = 0;
+  p.jailRound = G.round;
   renderTokens();
-  addLog(`🚓 ${p.name} masuk penjara!`);
+  addLog(`🚓 ${p.name} masuk penjara! Harus 10 ronde atau bayar 500.000 untuk bebas.`);
 }
 
 // ============================================================
@@ -701,13 +754,16 @@ function resolveTile(p) {
 }
 
 function resolvePurchasable(p, tile, prop) {
-  if (prop.owner === null) {
-    // Offer to buy
+  if (prop.owner === null || prop.forceSold) {
+    // Offer to buy — if forceSold, previous owner lost it but it's back on market
     showTilePopup(tile, prop, p, true);
   } else if (prop.owner === p.id) {
-    addLog(`🏠 ${p.name} berdiri di properti sendiri.`);
-  } else if (prop.mortgaged) {
-    addLog(`📋 ${tile.name} sedang dihipotek. Tidak bayar sewa.`);
+    // Own property — ask if want to upgrade
+    if (tile.type === 'property' && prop.level < 4) {
+      showUpgradePrompt(tile, prop, p);
+    } else {
+      addLog(`🏠 ${p.name} berdiri di properti sendiri.`);
+    }
   } else {
     // Pay rent
     const owner = G.players[prop.owner];
@@ -717,6 +773,55 @@ function resolvePurchasable(p, tile, prop) {
     renderAll();
     checkBankruptcy(p);
   }
+}
+
+function showUpgradePrompt(tile, prop, p) {
+  const buildCost = Math.floor(tile.price * 0.5 * (prop.level + 1));
+  const levelName = prop.level === 0 ? 'Kosong' : prop.level === 3 ? '🏠×3' : `🏠×${prop.level}`;
+  const nextLevelName = prop.level + 1 === 4 ? '🏢 Hotel' : `🏠×${prop.level + 1}`;
+  // Use tile popup for upgrade question
+  const el = document.getElementById('popupContent');
+  el.innerHTML = `
+    <div class="prop-detail">
+      <h4>🏗️ Upgrade ${tile.name}?</h4>
+      <div class="prop-info-row"><span>Level Sekarang</span><span>${levelName}</span></div>
+      <div class="prop-info-row"><span>Upgrade ke</span><span>${nextLevelName}</span></div>
+      <div class="prop-info-row"><span>Biaya Upgrade</span><span style="color:var(--red)">${fmt(buildCost)}</span></div>
+      <div class="prop-info-row"><span>💰 Uangmu</span><span>${fmt(p.money)}</span></div>
+    </div>
+  `;
+
+  const actEl = document.getElementById('popupActions');
+  actEl.innerHTML = '';
+
+  if (p.money >= buildCost) {
+    const yesBtn = document.createElement('button');
+    yesBtn.className = 'btn-primary';
+    yesBtn.textContent = `✅ YA — Upgrade (${fmt(buildCost)})`;
+    yesBtn.onclick = () => {
+      closeTilePopup();
+      p.money -= buildCost;
+      prop.level++;
+      const ln = prop.level === 4 ? '🏢 Hotel' : `🏠 × ${prop.level}`;
+      addLog(`🏗️ ${p.name} upgrade ${tile.name} ke ${ln} (${fmt(buildCost)})`);
+      renderAll();
+      saveGame();
+    };
+    actEl.appendChild(yesBtn);
+  } else {
+    actEl.innerHTML = `<p style="color:var(--red);text-align:center;font-size:12px">Tidak cukup uang untuk upgrade.</p>`;
+  }
+
+  const noBtn = document.createElement('button');
+  noBtn.className = 'btn-secondary';
+  noBtn.textContent = '❌ Tidak, Lewati';
+  noBtn.onclick = () => {
+    closeTilePopup();
+    addLog(`🏠 ${p.name} melewati upgrade ${tile.name}.`);
+  };
+  actEl.appendChild(noBtn);
+
+  document.getElementById('tilePopup').classList.remove('hidden');
 }
 
 function calcRent(tile, prop) {
@@ -729,14 +834,22 @@ function calcRent(tile, prop) {
     const diceTotal = G.lastDice[0] + G.lastDice[1];
     return diceTotal * (ownedUtils === 1 ? 4 : 10) * 1000;
   }
-  // Property
+  // Property: sewa = 50% dari nilai bangunan yang ada
+  // Nilai bangunan: level 0 = harga properti itu sendiri (kosong), level 1-3 = level * price * 0.5, level 4 (hotel) = price * 2
   if (prop.level === 0) {
-    // Base rent — if owner has full color group, double
+    // Tidak ada bangunan: sewa 50% harga properti
+    // Jika pemilik punya semua warna, sewa double
     const group = COLOR_GROUPS[tile.color];
     const allOwned = group.tiles.every(idx => G.properties[idx].owner === prop.owner);
-    return allOwned ? tile.rent[0] * 2 : tile.rent[0];
+    const baseRent = Math.floor(tile.price * 0.5);
+    return allOwned ? baseRent * 2 : baseRent;
   }
-  return tile.rent[prop.level]; // rent[1]=1house, [2]=2houses, [3]=3houses, [4]=hotel
+  // Ada bangunan: nilai bangunan = level * price * 0.5 (tiap level upgrade = 50% harga properti)
+  // Sewa = 50% dari total nilai bangunan
+  const buildingValue = prop.level < 4
+    ? prop.level * tile.price * 0.5
+    : tile.price * 2; // hotel = 2x harga
+  return Math.floor(buildingValue * 0.5);
 }
 
 // ============================================================
@@ -787,8 +900,8 @@ function applyCard(card, p, deck, cardIdx, cards) {
     case 'goto':
       const fromPos = p.position;
       if (card.target < fromPos || card.target === 0) {
-        addLog(`🏁 ${p.name} lewat START! +200.000`);
-        p.money += 200000;
+        addLog(`🏁 ${p.name} lewat START! +50.000`);
+        p.money += 50000;
       }
       p.position = card.target;
       renderTokens();
@@ -797,7 +910,7 @@ function applyCard(card, p, deck, cardIdx, cards) {
       break;
     case 'nearest-station':
       const nearest = findNearest(p.position, STATIONS);
-      if (nearest < p.position) { p.money += 200000; addLog(`🏁 Lewat START! +200rb`); }
+      if (nearest < p.position) { p.money += 50000; addLog(`🏁 Lewat START! +50rb`); }
       p.position = nearest;
       renderTokens();
       highlightCell(nearest);
@@ -861,7 +974,7 @@ function buyProperty(tileIdx) {
   const tile = TILES[tileIdx];
   const prop = G.properties[tileIdx];
 
-  if (prop.owner !== null) return;
+  if (prop.owner !== null && !prop.forceSold) return;
   if (p.money < tile.price) {
     addLog(`❌ ${p.name} tidak cukup uang untuk beli ${tile.name}`);
     closeTilePopup();
@@ -870,7 +983,9 @@ function buyProperty(tileIdx) {
 
   p.money -= tile.price;
   prop.owner = p.id;
-  p.properties.push(tileIdx);
+  prop.forceSold = false;
+  prop.level = 0;
+  if (!p.properties.includes(tileIdx)) p.properties.push(tileIdx);
   addLog(`🏠 ${p.name} beli ${tile.name} seharga ${fmt(tile.price)}`);
   closeTilePopup();
   renderAll();
@@ -883,22 +998,8 @@ function buildHouse(tileIdx) {
   const prop = G.properties[tileIdx];
 
   if (prop.owner !== p.id) { addLog('Bukan properti kamu!'); return; }
-  if (prop.mortgaged) { addLog('Properti sedang dihipotek!'); return; }
+  if (prop.forceSold) { addLog('Properti sedang dijual paksa!'); return; }
   if (prop.level >= 4) { addLog('Sudah hotel!'); return; }
-
-  // Check full color group owned
-  const group = COLOR_GROUPS[tile.color];
-  const allOwned = group.tiles.every(idx => G.properties[idx].owner === p.id && !G.properties[idx].mortgaged);
-  if (!allOwned) { addLog('❌ Harus punya semua properti warna ini untuk membangun!'); closeBuildPopup(); return; }
-
-  // Check even building rule (cannot build 2 on one while others have 0)
-  const levels = group.tiles.map(idx => G.properties[idx].level);
-  const myLevel = prop.level;
-  if (myLevel > Math.min(...levels)) {
-    addLog('❌ Harus bangun merata di semua properti warna ini!');
-    closeBuildPopup();
-    return;
-  }
 
   const cost = tile.price * (0.5 * (prop.level + 1));
   if (p.money < cost) { addLog(`❌ Tidak cukup uang. Butuh ${fmt(cost)}`); closeBuildPopup(); return; }
@@ -939,39 +1040,71 @@ function sellHouse(tileIdx) {
   showBuildPopup();
 }
 
-function mortgageProperty(tileIdx) {
+// ============================================================
+// JUAL PAKSA (replaces mortgage system)
+// ============================================================
+function forceSellProperty(tileIdx) {
   const p = G.players[G.currentPlayer];
   const tile = TILES[tileIdx];
   const prop = G.properties[tileIdx];
 
-  if (prop.owner !== p.id || prop.mortgaged) return;
-  if (prop.level > 0) { addLog('❌ Jual bangunan dulu sebelum hipotek!'); closeMortgagePopup(); return; }
+  if (prop.owner !== p.id) { addLog('Bukan properti kamu!'); return; }
+  if (prop.forceSold) { addLog('Properti sudah dalam status jual paksa!'); return; }
 
-  const val = Math.floor(tile.price * 0.5);
-  p.money += val;
-  prop.mortgaged = true;
-  addLog(`🏦 ${p.name} hipotek ${tile.name}. Dapat ${fmt(val)}`);
+  // Sell buildings first at 25% each level
+  let refund = 0;
+  if (prop.level > 0) {
+    refund += Math.floor(tile.price * 0.25 * prop.level);
+    prop.level = 0;
+  }
+
+  // Property sells at 50% harga ke pasar (pemain dapat uangnya)
+  refund += Math.floor(tile.price * 0.5);
+
+  // Remove ownership — property goes back to market
+  p.properties = p.properties.filter(i => i !== tileIdx);
+  prop.owner = null;
+  prop.level = 0;
+  prop.forceSold = false; // it's just unowned now, available for anyone
+
+  p.money += refund;
+  addLog(`💥 ${p.name} jual paksa ${tile.name}! Dapat ${fmt(refund)}. Properti kembali ke pasar.`);
   renderAll();
   saveGame();
-  showMortgagePopup();
+  showForceSellPopup();
 }
 
-function redeemMortgage(tileIdx) {
+function showForceSellPopup() {
   const p = G.players[G.currentPlayer];
-  const tile = TILES[tileIdx];
-  const prop = G.properties[tileIdx];
+  const el = document.getElementById('mortgageList');
 
-  if (prop.owner !== p.id || !prop.mortgaged) return;
+  if (p.properties.length === 0) {
+    el.innerHTML = '<p style="text-align:center;color:#888;padding:16px">Tidak ada properti yang bisa dijual paksa.</p>';
+  } else {
+    el.innerHTML = p.properties.map(idx => {
+      const tile = TILES[idx];
+      const prop = G.properties[idx];
+      const buildRefund = prop.level > 0 ? Math.floor(tile.price * 0.25 * prop.level) : 0;
+      const propRefund = Math.floor(tile.price * 0.5);
+      const totalRefund = buildRefund + propRefund;
+      const levelStr = prop.level === 0 ? 'Kosong' : prop.level === 4 ? '🏢 Hotel' : `🏠×${prop.level}`;
 
-  const cost = Math.floor(tile.price * 0.55); // 50% + 10% interest
-  if (p.money < cost) { addLog(`❌ Butuh ${fmt(cost)} untuk tebus hipotek.`); closeMortgagePopup(); return; }
+      return `<div class="prop-item">
+        <div class="prop-item-left" style="flex-direction:column;align-items:flex-start">
+          <div class="prop-item-name">${tile.name}</div>
+          <div class="prop-item-status">${levelStr} | Dapat: ${fmt(totalRefund)}</div>
+        </div>
+        <div class="prop-item-actions">
+          <button class="btn-xs red" onclick="forceSellProperty(${idx})">💥 Jual Paksa</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
 
-  p.money -= cost;
-  prop.mortgaged = false;
-  addLog(`✅ ${p.name} tebus hipotek ${tile.name}. Bayar ${fmt(cost)}`);
-  renderAll();
-  saveGame();
-  showMortgagePopup();
+  // Rename popup title
+  document.querySelector('#mortgagePopup h3').textContent = '💥 JUAL PAKSA PROPERTI';
+  document.getElementById('mortgagePopup').classList.remove('hidden');
+  closeMenu();
 }
 
 // ============================================================
@@ -1008,17 +1141,182 @@ function checkLoanInterest() {
     if (p.loan > 0 && !p.bankrupt) {
       const roundsElapsed = G.round - p.loanRound;
       if (roundsElapsed > 0 && roundsElapsed % G.loanIntervalRounds === 0) {
-        const interest = Math.floor(p.loan * 0.15);
+        const interest = Math.floor(p.loan * 0.25);
         p.loan += interest;
-        addLog(`📈 Bunga pinjaman ${p.name}: +${fmt(interest)}. Total hutang: ${fmt(p.loan)}`);
+        addLog(`📈 Bunga pinjaman bank ${p.name}: +${fmt(interest)} (25%). Total hutang: ${fmt(p.loan)}`);
       }
     }
   });
 }
 
 // ============================================================
-// PAYMENT SYSTEM
+// PLAYER-TO-PLAYER LOAN SYSTEM
 // ============================================================
+function showPlayerLendPopup() {
+  const p = G.players[G.currentPlayer];
+  const others = G.players.filter(op => op.id !== p.id && !op.bankrupt);
+
+  if (others.length === 0) { addLog('Tidak ada pemain lain.'); closeMenu(); return; }
+  if (p.money <= 0) { addLog('❌ Kamu tidak punya uang untuk dipinjamkan!'); return; }
+
+  // Also show existing loans involving current player
+  const myLoansAsLender = (G.playerLoans || []).filter(l => l.lender === p.id && !l.repaid);
+  const myLoansAsBorrower = (G.playerLoans || []).filter(l => l.borrower === p.id && !l.repaid);
+
+  const otherOpts = others.map(op => `<option value="${op.id}">${op.token} ${op.name} (💰${fmt(op.money)})</option>`).join('');
+
+  let lendHtml = `
+    <div class="trade-section">
+      <h4>💸 Pinjamkan ke Siapa?</h4>
+      <select class="trade-select" id="plLendTo">${otherOpts}</select>
+    </div>
+    <div class="trade-section">
+      <h4>Jumlah Pinjaman</h4>
+      <input type="number" class="trade-amount-input" id="plLendAmount" value="${Math.min(100000, p.money)}" step="10000" min="0" max="${p.money}"/>
+    </div>
+    <div class="trade-section">
+      <h4>Bunga (min 10%, max 100%)</h4>
+      <input type="number" class="trade-amount-input" id="plLendInterest" value="10" step="5" min="10" max="100"/>
+      <div style="font-size:11px;color:#888;margin-top:4px">% dari jumlah pinjaman (bebas custom 10-100%)</div>
+    </div>
+    <button class="btn-primary" onclick="executeLendToPlayer()">💸 PINJAMKAN</button>
+  `;
+
+  let existingLoansHtml = '';
+  if (myLoansAsLender.length > 0) {
+    existingLoansHtml += `<hr style="margin:12px 0"><h4>📋 Piutang Kamu (belum dibayar)</h4>`;
+    myLoansAsLender.forEach(l => {
+      const borrower = G.players[l.borrower];
+      const totalOwed = Math.floor(l.amount * (1 + l.interest / 100));
+      existingLoansHtml += `<div class="prop-item">
+        <div class="prop-item-left"><div>
+          <div class="prop-item-name">${borrower.token} ${borrower.name}</div>
+          <div class="prop-item-status">Pinjam ${fmt(l.amount)} | Bunga ${l.interest}% | Tagih: ${fmt(totalOwed)}</div>
+        </div></div>
+        <div class="prop-item-actions">
+          <button class="btn-xs green" onclick="collectPlayerLoan(${l.id})">Tagih</button>
+        </div>
+      </div>`;
+    });
+  }
+
+  if (myLoansAsBorrower.length > 0) {
+    existingLoansHtml += `<hr style="margin:12px 0"><h4>📋 Hutangmu ke Pemain Lain</h4>`;
+    myLoansAsBorrower.forEach(l => {
+      const lender = G.players[l.lender];
+      const totalOwed = Math.floor(l.amount * (1 + l.interest / 100));
+      existingLoansHtml += `<div class="prop-item">
+        <div class="prop-item-left"><div>
+          <div class="prop-item-name">${lender.token} ${lender.name}</div>
+          <div class="prop-item-status">Pinjam ${fmt(l.amount)} | Bunga ${l.interest}% | Harus bayar: ${fmt(totalOwed)}</div>
+        </div></div>
+        <div class="prop-item-actions">
+          <button class="btn-xs red" onclick="repayPlayerLoan(${l.id})">Bayar</button>
+        </div>
+      </div>`;
+    });
+  }
+
+  const el = document.getElementById('tradeContent');
+  el.innerHTML = lendHtml + existingLoansHtml;
+  document.getElementById('tradeActions').innerHTML = '';
+
+  const popup = document.getElementById('tradePopup');
+  popup.querySelector('h3').textContent = '💸 PINJAMAN ANTAR PEMAIN';
+  popup.classList.remove('hidden');
+  closeMenu();
+}
+
+function executeLendToPlayer() {
+  const p = G.players[G.currentPlayer];
+  const toId = parseInt(document.getElementById('plLendTo').value);
+  const amount = parseInt(document.getElementById('plLendAmount').value) || 0;
+  const interest = parseInt(document.getElementById('plLendInterest').value) || 10;
+
+  if (amount <= 0) { addLog('❌ Jumlah pinjaman harus lebih dari 0!'); return; }
+  if (amount > p.money) { addLog('❌ Tidak cukup uang untuk dipinjamkan!'); return; }
+  if (interest < 10 || interest > 100) { addLog('❌ Bunga harus antara 10%-100%!'); return; }
+  if (toId === p.id) { addLog('❌ Tidak bisa meminjamkan ke diri sendiri!'); return; }
+
+  const borrower = G.players[toId];
+  p.money -= amount;
+  borrower.money += amount;
+
+  if (!G.playerLoans) G.playerLoans = [];
+  if (!G.playerLoanNextId) G.playerLoanNextId = 1;
+
+  const loanId = G.playerLoanNextId++;
+  G.playerLoans.push({
+    id: loanId,
+    lender: p.id,
+    borrower: toId,
+    amount: amount,
+    interest: interest,
+    roundBorrowed: G.round,
+    repaid: false,
+  });
+
+  const totalOwed = Math.floor(amount * (1 + interest / 100));
+  addLog(`💸 ${p.name} pinjamkan ${fmt(amount)} ke ${borrower.name} dengan bunga ${interest}%. Total harus bayar: ${fmt(totalOwed)}`);
+  renderAll();
+  saveGame();
+  closeTradePopup();
+}
+
+function collectPlayerLoan(loanId) {
+  if (!G.playerLoans) return;
+  const loan = G.playerLoans.find(l => l.id === loanId);
+  if (!loan || loan.repaid) { addLog('Pinjaman tidak ditemukan atau sudah dibayar.'); return; }
+
+  const lender = G.players[loan.lender];
+  const borrower = G.players[loan.borrower];
+  const totalOwed = Math.floor(loan.amount * (1 + loan.interest / 100));
+
+  if (borrower.money < totalOwed) {
+    // Force partial repayment
+    const partial = borrower.money;
+    borrower.money = 0;
+    lender.money += partial;
+    loan.repaid = true;
+    addLog(`⚠️ ${borrower.name} hanya bisa bayar ${fmt(partial)} dari ${fmt(totalOwed)} ke ${lender.name}.`);
+    checkBankruptcy(borrower);
+  } else {
+    borrower.money -= totalOwed;
+    lender.money += totalOwed;
+    loan.repaid = true;
+    addLog(`✅ ${borrower.name} bayar hutang ${fmt(totalOwed)} ke ${lender.name} (termasuk bunga ${loan.interest}%)`);
+  }
+
+  renderAll();
+  saveGame();
+  closeTradePopup();
+}
+
+function repayPlayerLoan(loanId) {
+  if (!G.playerLoans) return;
+  const loan = G.playerLoans.find(l => l.id === loanId);
+  if (!loan || loan.repaid) { addLog('Pinjaman tidak ditemukan atau sudah dibayar.'); return; }
+
+  const lender = G.players[loan.lender];
+  const borrower = G.players[loan.borrower];
+  const totalOwed = Math.floor(loan.amount * (1 + loan.interest / 100));
+
+  if (borrower.money < totalOwed) {
+    addLog(`❌ ${borrower.name} tidak cukup uang. Butuh ${fmt(totalOwed)}, punya ${fmt(borrower.money)}`);
+    return;
+  }
+
+  borrower.money -= totalOwed;
+  lender.money += totalOwed;
+  loan.repaid = true;
+  addLog(`✅ ${borrower.name} lunasi hutang ${fmt(totalOwed)} ke ${lender.name} (bunga ${loan.interest}%)`);
+
+  renderAll();
+  saveGame();
+  closeTradePopup();
+}
+
+
 function pay(player, amount, recipient) {
   if (player.bankrupt) return;
 
@@ -1048,25 +1346,27 @@ function pay(player, amount, recipient) {
 }
 
 function emergencyFunds(player, needed) {
-  // Try to mortgage a property
+  // Try to force-sell a property (unowned goes back to market)
   for (let idx of player.properties) {
     const prop = G.properties[idx];
     const tile = TILES[idx];
-    if (!prop.mortgaged && prop.level === 0) {
-      const val = Math.floor(tile.price * 0.5);
-      player.money += val;
-      prop.mortgaged = true;
-      addLog(`⚠️ ${player.name} hipotek darurat: ${tile.name} (+${fmt(val)})`);
-      return true;
-    }
-    // Sell building first
+    // Sell buildings first
     if (prop.level > 0) {
       const refund = Math.floor(tile.price * 0.25 * prop.level);
       player.money += refund;
-      prop.level--;
-      addLog(`⚠️ ${player.name} jual bangunan darurat di ${tile.name} (+${fmt(refund)})`);
+      prop.level = 0;
+      addLog(`⚠️ ${player.name} jual darurat bangunan di ${tile.name} (+${fmt(refund)})`);
       return true;
     }
+    // Force sell the property itself
+    const refund = Math.floor(tile.price * 0.5);
+    player.money += refund;
+    player.properties = player.properties.filter(i => i !== idx);
+    prop.owner = null;
+    prop.level = 0;
+    prop.forceSold = false;
+    addLog(`⚠️ ${player.name} jual paksa darurat: ${tile.name} (+${fmt(refund)}). Kembali ke pasar!`);
+    return true;
   }
   return false;
 }
@@ -1086,12 +1386,12 @@ function checkBankruptcy(player) {
 function declareBankruptcy(player) {
   player.bankrupt = true;
   player.money = 0;
-  // Return properties to bank
+  // Return properties to bank (back to market)
   player.properties.forEach(idx => {
     const prop = G.properties[idx];
     prop.owner = null;
     prop.level = 0;
-    prop.mortgaged = false;
+    prop.forceSold = false;
   });
   player.properties = [];
   addLog(`💀 ${player.name} BANGKRUT! Semua properti dikembalikan ke bank.`);
@@ -1172,11 +1472,7 @@ function calcNetWorth(p) {
   p.properties.forEach(idx => {
     const prop = G.properties[idx];
     const tile = TILES[idx];
-    if (!prop.mortgaged) {
-      nw += tile.price + prop.level * tile.price * 0.5;
-    } else {
-      nw += tile.price * 0.5;
-    }
+    nw += tile.price + prop.level * tile.price * 0.5;
   });
   return Math.max(0, nw);
 }
@@ -1302,12 +1598,14 @@ function showTilePopup(tile, prop, p, canBuy) {
 
   let rentTable = '';
   if (tile.type === 'property') {
+    const buildCostPerLevel = Math.floor(tile.price * 0.5);
     rentTable = `
-      <div class="prop-info-row"><span>Sewa Dasar</span><span>${fmt(tile.rent[0])}</span></div>
-      <div class="prop-info-row"><span>🏠 × 1</span><span>${fmt(tile.rent[1])}</span></div>
-      <div class="prop-info-row"><span>🏠 × 2</span><span>${fmt(tile.rent[2])}</span></div>
-      <div class="prop-info-row"><span>🏠 × 3</span><span>${fmt(tile.rent[3])}</span></div>
-      <div class="prop-info-row"><span>🏢 Hotel</span><span>${fmt(tile.rent[4])}</span></div>
+      <div class="prop-info-row"><span>Sewa Kosong</span><span>${fmt(Math.floor(tile.price * 0.5))}</span></div>
+      <div class="prop-info-row"><span>🏠 × 1 (bangunan ${fmt(buildCostPerLevel)})</span><span>${fmt(Math.floor(buildCostPerLevel * 0.5))}/ronde</span></div>
+      <div class="prop-info-row"><span>🏠 × 2 (bangunan ${fmt(buildCostPerLevel*2)})</span><span>${fmt(Math.floor(buildCostPerLevel))}/ronde</span></div>
+      <div class="prop-info-row"><span>🏠 × 3 (bangunan ${fmt(buildCostPerLevel*3)})</span><span>${fmt(Math.floor(buildCostPerLevel*1.5))}/ronde</span></div>
+      <div class="prop-info-row"><span>🏢 Hotel (bangunan ${fmt(tile.price*2)})</span><span>${fmt(Math.floor(tile.price))}/ronde</span></div>
+      <div style="font-size:10px;color:#888;margin-top:4px">Sewa = 50% dari nilai bangunan</div>
     `;
   } else if (tile.type === 'station') {
     rentTable = `
@@ -1336,7 +1634,7 @@ function showTilePopup(tile, prop, p, canBuy) {
   const actEl = document.getElementById('popupActions');
   actEl.innerHTML = '';
 
-  if (canBuy && prop.owner === null) {
+  if (canBuy && (prop.owner === null || prop.forceSold)) {
     if (p.money >= tile.price) {
       const buyBtn = document.createElement('button');
       buyBtn.className = 'btn-primary';
@@ -1357,7 +1655,7 @@ function onCellClick(idx) {
 
   if (['property','station','utility'].includes(tile.type)) {
     const p = G.players[G.currentPlayer];
-    const canBuy = (prop.owner === null) && (G.phase === 'action') && (p.position === idx);
+    const canBuy = (prop.owner === null || prop.forceSold) && (G.phase === 'action') && (p.position === idx);
     showTilePopup(tile, prop, p, canBuy);
   }
 }
@@ -1405,7 +1703,7 @@ function showPropertyPopup(playerId) {
       const tile = TILES[idx];
       const prop = G.properties[idx];
       const colorDot = tile.color ? `<div class="prop-color-dot" style="background:${COLOR_CSS[tile.color]}"></div>` : '';
-      const status = prop.mortgaged ? '❌ Dihipotek' : prop.level === 4 ? '🏢 Hotel' : prop.level > 0 ? `🏠×${prop.level}` : '✅ Kosong';
+      const status = prop.level === 4 ? '🏢 Hotel' : prop.level > 0 ? `🏠×${prop.level}` : '✅ Kosong';
 
       return `<div class="prop-item">
         <div class="prop-item-left">
@@ -1434,7 +1732,7 @@ function showPropertyPopupForAll() {
     el.innerHTML = allOwned.map(({ tile, prop }) => {
       const owner = G.players[prop.owner];
       const colorDot = tile.color ? `<div class="prop-color-dot" style="background:${COLOR_CSS[tile.color]}"></div>` : '';
-      const status = prop.mortgaged ? '❌' : prop.level === 4 ? '🏢' : prop.level > 0 ? `🏠×${prop.level}` : '—';
+      const status = prop.level === 4 ? '🏢' : prop.level > 0 ? `🏠×${prop.level}` : '—';
       return `<div class="prop-item">
         <div class="prop-item-left">
           ${colorDot}
@@ -1454,38 +1752,7 @@ function showPropertyPopupForAll() {
 function closePropertyPopup() { document.getElementById('propertyPopup').classList.add('hidden'); }
 function closeTradePopup() { document.getElementById('tradePopup').classList.add('hidden'); }
 
-function showMortgagePopup() {
-  const p = G.players[G.currentPlayer];
-  const el = document.getElementById('mortgageList');
-
-  if (p.properties.length === 0) {
-    el.innerHTML = '<p style="text-align:center;color:#888;padding:16px">Tidak ada properti.</p>';
-  } else {
-    el.innerHTML = p.properties.map(idx => {
-      const tile = TILES[idx];
-      const prop = G.properties[idx];
-      const mortVal = Math.floor(tile.price * 0.5);
-      const redeemVal = Math.floor(tile.price * 0.55);
-
-      return `<div class="prop-item">
-        <div class="prop-item-left">
-          <div>
-            <div class="prop-item-name">${tile.name}</div>
-            <div class="prop-item-status">${prop.mortgaged ? '❌ Dihipotek' : '✅ Aktif'} | Hipotek: ${fmt(mortVal)}</div>
-          </div>
-        </div>
-        <div class="prop-item-actions">
-          ${!prop.mortgaged && prop.level === 0 ? `<button class="btn-xs" onclick="mortgageProperty(${idx})">Hipotek</button>` : ''}
-          ${prop.mortgaged ? `<button class="btn-xs green" onclick="redeemMortgage(${idx})">Tebus ${fmt(redeemVal)}</button>` : ''}
-        </div>
-      </div>`;
-    }).join('');
-  }
-
-  document.getElementById('mortgagePopup').classList.remove('hidden');
-  closeMenu();
-}
-
+function showMortgagePopup() { showForceSellPopup(); }
 function closeMortgagePopup() { document.getElementById('mortgagePopup').classList.add('hidden'); }
 
 function showLoanPopup() {
@@ -1494,7 +1761,7 @@ function showLoanPopup() {
   document.getElementById('loanInfo').innerHTML = `
     <div class="nw-row"><span>Hutang Saat Ini</span><span style="color:var(--red)">${fmt(p.loan)}</span></div>
     <div class="nw-row"><span>Maksimal Pinjam Lagi</span><span>${fmt(maxBorrow)}</span></div>
-    <div class="nw-row"><span>Bunga per 5 Ronde</span><span>15%</span></div>
+    <div class="nw-row"><span>Bunga per 5 Ronde</span><span>25%</span></div>
     <br>
     <input type="number" class="trade-amount-input" id="loanAmount" placeholder="Jumlah pinjaman" step="50000" min="0" max="${maxBorrow}" value="${Math.min(100000, maxBorrow)}"/>
   `;
@@ -1523,8 +1790,6 @@ function showBuildPopup() {
     el.innerHTML = buildableProps.map(idx => {
       const tile = TILES[idx];
       const prop = G.properties[idx];
-      const group = COLOR_GROUPS[tile.color];
-      const allOwned = group.tiles.every(i => G.properties[i].owner === p.id);
       const buildCost = Math.floor(tile.price * 0.5 * (prop.level + 1));
       const sellRefund = prop.level > 0 ? Math.floor(tile.price * 0.25 * prop.level) : 0;
       const levelStr = prop.level === 0 ? 'Kosong' : prop.level === 4 ? '🏢 Hotel' : `🏠×${prop.level}`;
@@ -1535,10 +1800,10 @@ function showBuildPopup() {
             <div class="prop-color-dot" style="background:${COLOR_CSS[tile.color]}"></div>
             ${tile.name}
           </div>
-          <div class="prop-item-status">${levelStr}${!allOwned ? ' | ⚠️ Kurang properti set' : prop.mortgaged ? ' | ❌ Dihipotek' : ''}</div>
+          <div class="prop-item-status">${levelStr}</div>
         </div>
         <div class="prop-item-actions" style="display:flex;gap:3px;flex-wrap:wrap">
-          ${allOwned && !prop.mortgaged && prop.level < 4 ? `<button class="btn-xs green" onclick="buildHouse(${idx})">+🏠 ${fmt(buildCost)}</button>` : ''}
+          ${prop.level < 4 ? `<button class="btn-xs green" onclick="buildHouse(${idx})">+🏠 ${fmt(buildCost)}</button>` : ''}
           ${prop.level > 0 ? `<button class="btn-xs red" onclick="sellHouse(${idx})">-🏠 +${fmt(sellRefund)}</button>` : ''}
         </div>
       </div>`;
@@ -1858,8 +2123,8 @@ window.endTurn = endTurn;
 window.buyProperty = buyProperty;
 window.buildHouse = buildHouse;
 window.sellHouse = sellHouse;
-window.mortgageProperty = mortgageProperty;
-window.redeemMortgage = redeemMortgage;
+window.mortgageProperty = forceSellProperty; // compat stub
+window.redeemMortgage = function(){}; // compat stub — no longer used
 window.onCellClick = onCellClick;
 window.closeTilePopup = closeTilePopup;
 window.closeCardPopup = closeCardPopup;
@@ -1872,6 +2137,9 @@ window.updateTradeToProps = updateTradeToProps;
 window.executeTrade = executeTrade;
 window.showMortgagePopup = showMortgagePopup;
 window.closeMortgagePopup = closeMortgagePopup;
+window.showForceSellPopup = showForceSellPopup;
+window.forceSellProperty = forceSellProperty;
+window.showUpgradePrompt = showUpgradePrompt;
 window.showLoanPopup = showLoanPopup;
 window.closeLoanPopup = closeLoanPopup;
 window.takeLoan = takeLoan;
@@ -1885,4 +2153,9 @@ window.closeMenu = closeMenu;
 window.confirmNewGame = confirmNewGame;
 window.useJailFreeCard = useJailFreeCard;
 window.payJailFine = payJailFine;
+window.confessJail = confessJail;
 window.showPlayerInfo = showPlayerInfo;
+window.showPlayerLendPopup = showPlayerLendPopup;
+window.executeLendToPlayer = executeLendToPlayer;
+window.collectPlayerLoan = collectPlayerLoan;
+window.repayPlayerLoan = repayPlayerLoan;
